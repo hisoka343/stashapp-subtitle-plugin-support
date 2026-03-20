@@ -1,4 +1,4 @@
-# ASS Subtitles Plugin for Stash
+# ASS Subtitles Plugin for Stashapp
 
 Pixel-perfect rendering of embedded ASS/SSA subtitles during video playback in Stash's web player, powered by JASSUB (WebAssembly libass).
 
