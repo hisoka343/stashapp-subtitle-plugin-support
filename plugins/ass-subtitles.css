@@ -1,0 +1,48 @@
+/* =============================================
+   ASS Subtitles Plugin — Toolbar Button
+   JASSUB handles all subtitle rendering via canvas.
+   ============================================= */
+
+.ass-sub-btn {
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 3em;
+  height: 100%;
+  background: transparent;
+  border: none;
+  outline: none;
+  padding: 0;
+  margin: 0;
+  color: #ccc;
+  font-size: inherit;
+  position: relative;
+}
+
+.ass-sub-btn:hover {
+  color: #fff;
+}
+
+.ass-sub-btn .ass-sub-icon {
+  font-family: "Courier New", monospace;
+  font-size: 0.85em;
+  font-weight: bold;
+  border: 1.5px solid currentColor;
+  border-radius: 3px;
+  padding: 1px 4px;
+  line-height: 1;
+  letter-spacing: -0.5px;
+  opacity: 0.6;
+  transition: opacity 0.15s, color 0.15s;
+}
+
+.ass-sub-btn.ass-sub-active .ass-sub-icon,
+.ass-sub-btn:hover .ass-sub-icon {
+  opacity: 1;
+}
+
+.ass-sub-btn.ass-sub-active .ass-sub-icon {
+  color: #fff;
+  border-color: #fff;
+}

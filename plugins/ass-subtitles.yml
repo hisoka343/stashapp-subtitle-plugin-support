@@ -1,0 +1,37 @@
+name: ASS Subtitles
+description: Renders embedded ASS/SSA subtitles during video playback using JASSUB (WebAssembly libass). Extracts subtitle tracks via ffmpeg and renders them pixel-perfectly on a canvas overlay.
+version: 2.0.0
+url: https://github.com/stashapp-community/ass-subtitles
+interface: raw
+exec:
+  - python
+  - "{pluginDir}/extract_subtitles.py"
+tasks:
+  - name: Extract All Subtitles
+    description: Scans all scenes and extracts embedded ASS/SSA subtitle tracks to .ass files.
+  - name: Extract Subtitles for Scene
+    description: Extracts subtitles for a specific scene (pass scene_id in args).
+ui:
+  javascript:
+    - ass-subtitles.js
+  css:
+    - ass-subtitles.css
+  assets:
+    /jassub: jassub
+settings:
+  subtitlesDir:
+    displayName: Subtitles directory (leave blank to save next to video)
+    description: Optional directory to store extracted .ass files. If blank, subtitles are saved alongside the video file.
+    type: STRING
+  defaultEnabled:
+    displayName: Show subtitles by default
+    description: If enabled, subtitles will be shown automatically when available.
+    type: BOOLEAN
+  fontSize:
+    displayName: Font size override (px)
+    description: Override the subtitle font size. Leave at 0 to use the ASS file sizes.
+    type: NUMBER
+  ffmpegPath:
+    displayName: FFmpeg path
+    description: Path to ffmpeg binary. Leave blank to use system ffmpeg.
+    type: STRING
