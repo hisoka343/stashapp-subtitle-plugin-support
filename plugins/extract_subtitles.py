@@ -2,61 +2,37 @@ import json
 import sys
 import os
 import subprocess
-import re
-import urllib.request
+
+try:
+    from stashapi.stashapp import StashInterface
+    import stashapi.log as stash_log
+except ModuleNotFoundError:
+    print("ERROR: stashapp-tools is not installed.", file=sys.stderr)
+    print("Install it with: pip install stashapp-tools", file=sys.stderr)
+    sys.exit(1)
 
 PLUGIN_ID = "ass-subtitles"
 
-# --- Stash plugin helpers ---
 
 def get_input():
-    """Read JSON input from stdin (Stash passes plugin args this way)."""
     raw = sys.stdin.read()
     return json.loads(raw)
 
 
-def graphql_request(query, variables=None):
-    """Send a GraphQL request to the Stash server."""
-    server_url = os.environ.get("STASH_URL", "http://localhost:9999")
-    api_key = os.environ.get("STASH_API_KEY", "")
-    url = f"{server_url}/graphql"
-
-    body = json.dumps({"query": query, "variables": variables or {}}).encode("utf-8")
-    headers = {"Content-Type": "application/json"}
-    if api_key:
-        headers["ApiKey"] = api_key
-
-    req = urllib.request.Request(url, data=body, headers=headers, method="POST")
-    with urllib.request.urlopen(req) as resp:
-        return json.loads(resp.read().decode("utf-8"))
-
-
 def log(level, msg):
-    """Emit a log line that Stash picks up."""
     out = json.dumps({"output": {"log": {"level": level, "message": msg}}})
     print(out, flush=True)
 
 
 def progress(p):
-    """Report progress (0.0 – 1.0)."""
     out = json.dumps({"output": {"progress": p}})
     print(out, flush=True)
 
 
-# --- Settings ---
-
-def get_settings():
-    """Retrieve plugin settings from Stash."""
-    query = """
-    query Configuration {
-        configuration {
-            plugins
-        }
-    }
-    """
+def get_settings(stash):
     try:
-        result = graphql_request(query)
-        all_plugins = result.get("data", {}).get("configuration", {}).get("plugins", {})
+        config = stash.call_GQL("query { configuration { plugins } }")
+        all_plugins = config.get("configuration", {}).get("plugins", {})
         if isinstance(all_plugins, dict):
             return all_plugins.get(PLUGIN_ID, {})
     except Exception:
@@ -70,28 +46,17 @@ def get_ffmpeg_path(settings):
 
 
 def get_ffprobe_path(settings):
-    """Derive ffprobe path from ffmpeg path."""
     ffmpeg = get_ffmpeg_path(settings)
     if ffmpeg == "ffmpeg":
         return "ffprobe"
-    # If user set a custom ffmpeg path, try to find ffprobe next to it
     directory = os.path.dirname(ffmpeg)
-    if directory:
-        return os.path.join(directory, "ffprobe")
-    return "ffprobe"
+    return os.path.join(directory, "ffprobe") if directory else "ffprobe"
 
-
-# --- Subtitle extraction ---
 
 def probe_subtitle_streams(video_path, ffprobe_path="ffprobe"):
-    """Use ffprobe to find embedded subtitle streams (ASS/SSA)."""
     cmd = [
-        ffprobe_path,
-        "-v", "quiet",
-        "-print_format", "json",
-        "-show_streams",
-        "-select_streams", "s",
-        video_path
+        ffprobe_path, "-v", "quiet", "-print_format", "json",
+        "-show_streams", "-select_streams", "s", video_path
     ]
     try:
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
@@ -115,15 +80,9 @@ def probe_subtitle_streams(video_path, ffprobe_path="ffprobe"):
 
 
 def extract_subtitle(video_path, stream_index, output_path, ffmpeg_path="ffmpeg"):
-    """Extract a single subtitle stream to an .ass file."""
     cmd = [
-        ffmpeg_path,
-        "-y",                       # overwrite
-        "-v", "quiet",
-        "-i", video_path,
-        "-map", f"0:{stream_index}",
-        "-c:s", "ass",              # always output ASS format
-        output_path
+        ffmpeg_path, "-y", "-v", "quiet", "-i", video_path,
+        "-map", f"0:{stream_index}", "-c:s", "ass", output_path
     ]
     try:
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
@@ -137,33 +96,23 @@ def extract_subtitle(video_path, stream_index, output_path, ffmpeg_path="ffmpeg"
 
 
 def output_path_for_sub(video_path, stream, subs_dir=None):
-    """Build the output .ass file path for a given stream."""
     base = os.path.splitext(video_path)[0]
     lang = stream.get("language", "und")
     idx = stream.get("index", 0)
     suffix = f".{lang}.{idx}.ass"
-
     if subs_dir:
         os.makedirs(subs_dir, exist_ok=True)
-        filename = os.path.basename(base) + suffix
-        return os.path.join(subs_dir, filename)
+        return os.path.join(subs_dir, os.path.basename(base) + suffix)
     return base + suffix
 
 
-def process_scene(scene_id, settings):
-    """Extract subtitles for a single scene by its Stash ID."""
-    query = """
-    query FindScene($id: ID!) {
-        findScene(id: $id) {
-            id
-            files {
-                path
-            }
+def process_scene(stash, scene_id, settings):
+    result = stash.call_GQL("""
+        query FindScene($id: ID!) {
+            findScene(id: $id) { id, files { path } }
         }
-    }
-    """
-    result = graphql_request(query, {"id": str(scene_id)})
-    scene = result.get("data", {}).get("findScene")
+    """, {"id": str(scene_id)})
+    scene = result.get("findScene")
     if not scene:
         log("warning", f"Scene {scene_id} not found")
         return 0
@@ -177,80 +126,59 @@ def process_scene(scene_id, settings):
         video_path = f.get("path", "")
         if not video_path or not os.path.exists(video_path):
             continue
-
         streams = probe_subtitle_streams(video_path, ffprobe)
         if not streams:
             continue
-
         for stream in streams:
             out = output_path_for_sub(video_path, stream, subs_dir)
             if os.path.exists(out):
-                log("debug", f"Subtitle already exists: {out}")
                 extracted += 1
                 continue
             if extract_subtitle(video_path, stream["index"], out, ffmpeg):
                 log("info", f"Extracted subtitle: {out}")
                 extracted += 1
-
     return extracted
 
 
-def process_all_scenes(settings):
-    """Extract subtitles for every scene in the library."""
-    page = 1
-    per_page = 100
-    total_extracted = 0
-    total_scenes = 0
-
-    # First get count
-    count_query = """
-    query { findScenes(filter: { per_page: 0 }) { count } }
-    """
-    count_result = graphql_request(count_query)
-    total = count_result.get("data", {}).get("findScenes", {}).get("count", 0)
+def process_all_scenes(stash, settings):
+    count_result = stash.call_GQL("query { findScenes(filter: { per_page: 0 }) { count } }")
+    total = count_result.get("findScenes", {}).get("count", 0)
     if total == 0:
         log("info", "No scenes found.")
         return
 
     log("info", f"Processing {total} scenes for embedded ASS/SSA subtitles...")
 
-    scenes_query = """
-    query FindScenes($page: Int!, $per_page: Int!) {
-        findScenes(filter: { page: $page, per_page: $per_page }) {
-            scenes {
-                id
-                files {
-                    path
-                }
-            }
-        }
-    }
-    """
-
     ffmpeg = get_ffmpeg_path(settings)
     ffprobe = get_ffprobe_path(settings)
     subs_dir = settings.get("subtitlesDir", "").strip() or None
+    page = 1
+    per_page = 100
     processed = 0
+    total_scenes = 0
+    total_extracted = 0
 
     while True:
-        result = graphql_request(scenes_query, {"page": page, "per_page": per_page})
-        scenes = result.get("data", {}).get("findScenes", {}).get("scenes", [])
+        result = stash.call_GQL("""
+            query FindScenes($page: Int!, $per_page: Int!) {
+                findScenes(filter: { page: $page, per_page: $per_page }) {
+                    scenes { id, files { path } }
+                }
+            }
+        """, {"page": page, "per_page": per_page})
+        scenes = result.get("findScenes", {}).get("scenes", [])
         if not scenes:
             break
-
         for scene in scenes:
             processed += 1
             progress(processed / total)
-
             for f in scene.get("files", []):
                 video_path = f.get("path", "")
                 if not video_path or not os.path.exists(video_path):
                     continue
-
                 streams = probe_subtitle_streams(video_path, ffprobe)
                 if not streams:
                     continue
-
                 total_scenes += 1
                 for stream in streams:
                     out = output_path_for_sub(video_path, stream, subs_dir)
@@ -260,46 +188,34 @@ def process_all_scenes(settings):
                     if extract_subtitle(video_path, stream["index"], out, ffmpeg):
                         log("info", f"Extracted: {out}")
                         total_extracted += 1
-
         page += 1
 
     log("info", f"Done. {total_scenes} scenes had subtitles, {total_extracted} tracks extracted.")
 
 
-# --- Entry point ---
-
-def get_subtitle_text_for_scene(scene_id, settings):
-    """Extract ASS subtitle text for a scene and return it (no file saving)."""
-    query = """
-    query FindScene($id: ID!) {
-        findScene(id: $id) {
-            id
-            files { path }
+def get_subtitle_text_for_scene(stash, scene_id, settings):
+    result = stash.call_GQL("""
+        query FindScene($id: ID!) {
+            findScene(id: $id) { id, files { path } }
         }
-    }
-    """
-    result = graphql_request(query, {"id": str(scene_id)})
-    scene = result.get("data", {}).get("findScene")
+    """, {"id": str(scene_id)})
+    scene = result.get("findScene")
     if not scene:
         return None
 
     ffmpeg = get_ffmpeg_path(settings)
     ffprobe = get_ffprobe_path(settings)
     subs_dir = settings.get("subtitlesDir", "").strip() or None
-
     tracks = []
 
     for f in scene.get("files", []):
         video_path = f.get("path", "")
         if not video_path or not os.path.exists(video_path):
             continue
-
         streams = probe_subtitle_streams(video_path, ffprobe)
         if not streams:
             continue
-
         for stream in streams:
-            # First check if we have a pre-extracted file
             out_path = output_path_for_sub(video_path, stream, subs_dir)
             if os.path.exists(out_path):
                 try:
@@ -313,16 +229,9 @@ def get_subtitle_text_for_scene(scene_id, settings):
                         continue
                 except Exception:
                     pass
-
-            # Extract on the fly to stdout
             cmd = [
-                ffmpeg,
-                "-v", "quiet",
-                "-i", video_path,
-                "-map", f"0:{stream['index']}",
-                "-c:s", "ass",
-                "-f", "ass",
-                "pipe:1"
+                ffmpeg, "-v", "quiet", "-i", video_path,
+                "-map", f"0:{stream['index']}", "-c:s", "ass", "-f", "ass", "pipe:1"
             ]
             try:
                 proc = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
@@ -334,53 +243,45 @@ def get_subtitle_text_for_scene(scene_id, settings):
             except Exception as e:
                 log("warning", f"On-the-fly extraction failed: {e}")
 
-    if not tracks:
-        return None
-
-    return {"tracks": tracks}
+    return {"tracks": tracks} if tracks else None
 
 
 def main():
     plugin_input = get_input()
+    stash = StashInterface(plugin_input["server_connection"])
+
     args = plugin_input.get("args", {})
     mode = args.get("mode", "")
 
-    # Try to load settings from Stash; fall back to args
     try:
-        stash_settings = get_settings()
+        stash_settings = get_settings(stash)
     except Exception:
         stash_settings = {}
 
-    # Merge any args into settings
     for k, v in args.items():
         if v:
             stash_settings[k] = v
 
-    # --- Operation mode: return subtitle text for JS frontend ---
     if mode == "get_subtitles":
         scene_id = args.get("scene_id")
         if not scene_id:
             print(json.dumps({"output": None}), flush=True)
             return
-        result = get_subtitle_text_for_scene(scene_id, stash_settings)
-        # Return the subtitle data as the operation output
+        result = get_subtitle_text_for_scene(stash, scene_id, stash_settings)
         output = json.dumps(result) if result else ""
         print(json.dumps({"output": output}), flush=True)
         return
 
-    # --- Task mode ---
     task_name = args.get("task", "")
-
     if task_name == "Extract Subtitles for Scene":
         scene_id = args.get("scene_id")
         if not scene_id:
             log("error", "No scene_id provided.")
             return
-        count = process_scene(scene_id, stash_settings)
+        count = process_scene(stash, scene_id, stash_settings)
         log("info", f"Extracted {count} subtitle track(s) for scene {scene_id}.")
     else:
-        # Default: extract all
-        process_all_scenes(stash_settings)
+        process_all_scenes(stash, stash_settings)
 
 
 if __name__ == "__main__":
