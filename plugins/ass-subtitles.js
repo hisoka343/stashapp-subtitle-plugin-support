@@ -9,6 +9,7 @@
   let videoElement = null;
   let isEnabled = true;
   let btnEl = null;
+  let extractBtnEl = null;
   let jassubLoaded = false;
   let workerBlobUrl = null;
   let cachedAssText = null;
@@ -323,6 +324,46 @@
     if (btnEl) { btnEl.remove(); btnEl = null; }
   }
 
+  function createExtractButton(sceneId) {
+    if (extractBtnEl) return;
+    const waitForToolbar = setInterval(() => {
+      const toolbar =
+        document.querySelector(".vjs-control-bar") ||
+        document.querySelector(".video-js .vjs-control-bar");
+      if (!toolbar) return;
+      clearInterval(waitForToolbar);
+
+      extractBtnEl = document.createElement("button");
+      extractBtnEl.className = "vjs-control vjs-button ass-extract-btn";
+      extractBtnEl.title = "Extract Subtitles for this scene";
+      extractBtnEl.innerHTML = `<span class="ass-sub-icon">⬇CC</span>`;
+      extractBtnEl.addEventListener("click", async () => {
+        if (currentSceneId !== sceneId) return;
+        const icon = extractBtnEl.querySelector(".ass-sub-icon");
+        extractBtnEl.disabled = true;
+        icon.textContent = "…";
+        try {
+          await runPluginOp({ task: "Extract Subtitles for Scene", scene_id: String(sceneId) });
+          removeExtractButton();
+          initForScene(sceneId);
+        } catch (e) {
+          warn("Extraction failed: " + e);
+          extractBtnEl.disabled = false;
+          icon.textContent = "⬇CC";
+        }
+      });
+
+      const fsBtn = toolbar.querySelector(".vjs-fullscreen-control");
+      if (fsBtn) toolbar.insertBefore(extractBtnEl, fsBtn);
+      else toolbar.appendChild(extractBtnEl);
+    }, 500);
+    setTimeout(() => clearInterval(waitForToolbar), 15000);
+  }
+
+  function removeExtractButton() {
+    if (extractBtnEl) { extractBtnEl.remove(); extractBtnEl = null; }
+  }
+
   function toggleSubtitles() {
     isEnabled = !isEnabled;
     if (btnEl) {
@@ -355,7 +396,11 @@
     if (currentSceneId !== sceneId) return;
 
     const result = await fetchSubtitleText(sceneId);
-    if (!result) { log("No subtitles found."); return; }
+    if (!result) {
+      log("No subtitles found — showing extract button.");
+      startVideoPoll(sceneId, true);
+      return;
+    }
     if (currentSceneId !== sceneId) return;
 
     let assText = null;
@@ -376,7 +421,7 @@
     startVideoPoll(sceneId);
   }
 
-  function startVideoPoll(sceneId) {
+  function startVideoPoll(sceneId, extractOnly = false) {
     stopVideoPoll();
     let attempts = 0;
 
@@ -392,6 +437,11 @@
 
       stopVideoPoll();
       log(`Found video after ${attempts} attempts.`);
+
+      if (extractOnly) {
+        createExtractButton(sceneId);
+        return;
+      }
 
       videoElement = vid;
 
@@ -418,6 +468,7 @@
   function cleanup() {
     stopVideoPoll();
     removeButton();
+    removeExtractButton();
     destroyJassub();
     destroyOverlay();
     currentSceneId = null;
